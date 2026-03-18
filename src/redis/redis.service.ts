@@ -94,6 +94,23 @@ export class RedisService {
     await this.client.set(this.inventoryKey(flashSaleId), remaining);
   }
 
+  /** Store any JSON-serialisable value with an optional TTL in seconds. */
+  async setJson<T>(key: string, value: T, ttlSeconds: number): Promise<void> {
+    await this.client.set(key, JSON.stringify(value), 'EX', ttlSeconds);
+  }
+
+  /** Retrieve and parse a cached JSON value, or null on miss. */
+  async getJson<T>(key: string): Promise<T | null> {
+    const raw = await this.client.get(key);
+    if (raw === null) return null;
+    return JSON.parse(raw) as T;
+  }
+
+  /** Invalidate a cache key (e.g. after a sale is created). */
+  async del(key: string): Promise<void> {
+    await this.client.del(key);
+  }
+
   async isHealthy(): Promise<boolean> {
     try {
       await this.client.ping();

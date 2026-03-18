@@ -64,48 +64,71 @@ export class FlashSaleService implements OnModuleInit {
 
     const saved = await this.flashSaleRepo.save(sale);
     await this.redisService.initInventory(saved.id, saved.totalInventory);
+    // Bust the metadata cache so the next status request sees the new sale
+    await this.redisService.del(FlashSaleService.SALE_CACHE_KEY);
     return saved;
   }
+
+  // Cache TTL for the flash sale metadata DB lookup (seconds).
+  // Inventory is always read fresh from Redis regardless of this TTL.
+  private static readonly SALE_CACHE_KEY = 'flash_sale:current:meta';
+  private static readonly SALE_CACHE_TTL = 10;
 
   /**
    * Returns the most relevant single flash sale:
    * priority order — active → upcoming (soonest) → ended (most recent)
+   *
+   * The DB lookup is cached in Redis for SALE_CACHE_TTL seconds to reduce
+   * PostgreSQL load under heavy read traffic. Inventory is always served
+   * fresh directly from the Redis counter, so it is never stale.
    */
   async getMostRelevantSale(): Promise<{
     sale: FlashSale;
     status: FlashSaleStatus;
     remainingInventory: number;
   }> {
-    const now = new Date();
-
-    // Try active first
-    let sale = await this.flashSaleRepo.findOne({
-      where: {
-        startTime: LessThanOrEqual(now),
-        endTime: MoreThanOrEqual(now),
-      },
-      order: { startTime: 'DESC' },
-    });
+    // --- Cache layer: try Redis first ---
+    let sale = await this.redisService.getJson<FlashSale>(
+      FlashSaleService.SALE_CACHE_KEY,
+    );
 
     if (!sale) {
-      // Try upcoming
+      // Cache miss — query PostgreSQL
+      const now = new Date();
+
       sale = await this.flashSaleRepo.findOne({
-        where: { startTime: MoreThanOrEqual(now) },
-        order: { startTime: 'ASC' },
+        where: {
+          startTime: LessThanOrEqual(now),
+          endTime: MoreThanOrEqual(now),
+        },
+        order: { startTime: 'DESC' },
       });
+
+      if (!sale) {
+        sale = await this.flashSaleRepo.findOne({
+          where: { startTime: MoreThanOrEqual(now) },
+          order: { startTime: 'ASC' },
+        });
+      }
+
+      if (!sale) {
+        sale = await this.flashSaleRepo.findOne({
+          order: { endTime: 'DESC' },
+        });
+      }
+
+      if (!sale) {
+        throw new NotFoundException('No flash sale found');
+      }
+
+      // Store in cache; intentionally fire-and-forget so a Redis hiccup
+      // never blocks the response.
+      this.redisService
+        .setJson(FlashSaleService.SALE_CACHE_KEY, sale, FlashSaleService.SALE_CACHE_TTL)
+        .catch((err) => this.logger.warn('Failed to cache sale metadata', err));
     }
 
-    if (!sale) {
-      // Most recently ended
-      sale = await this.flashSaleRepo.findOne({
-        order: { endTime: 'DESC' },
-      });
-    }
-
-    if (!sale) {
-      throw new NotFoundException('No flash sale found');
-    }
-
+    // Inventory is always read fresh from its own Redis key — never cached here
     const remainingInventory = await this.getInventory(sale);
     const status = this.computeStatus(sale, remainingInventory);
 
