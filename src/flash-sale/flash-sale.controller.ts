@@ -1,7 +1,16 @@
-import { Controller, Get, Post, Body, HttpCode, HttpStatus } from '@nestjs/common';
-import { ApiTags, ApiOperation, ApiResponse } from '@nestjs/swagger';
+import {
+  Controller,
+  Get,
+  Post,
+  Body,
+  HttpCode,
+  HttpStatus,
+  UseGuards,
+} from '@nestjs/common';
+import { ApiTags, ApiOperation, ApiResponse, ApiHeader } from '@nestjs/swagger';
 import { FlashSaleService } from './flash-sale.service';
 import { CreateFlashSaleDto } from './dto/create-flash-sale.dto';
+import { ApiKeyGuard } from '../auth/api-key.guard';
 
 @ApiTags('flash-sales')
 @Controller('flash-sales')
@@ -12,9 +21,16 @@ export class FlashSaleController {
    * Create a new flash sale. In production this would be admin-only.
    */
   @Post()
+  @UseGuards(ApiKeyGuard)
   @HttpCode(HttpStatus.CREATED)
   @ApiOperation({ summary: 'Create a flash sale' })
+  @ApiHeader({
+    name: 'x-api-key',
+    description: 'Admin API key',
+    required: true,
+  })
   @ApiResponse({ status: 201, description: 'Flash sale created' })
+  @ApiResponse({ status: 401, description: 'Invalid API key' })
   create(@Body() dto: CreateFlashSaleDto) {
     return this.flashSaleService.create(dto);
   }
