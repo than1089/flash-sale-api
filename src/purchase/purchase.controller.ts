@@ -3,7 +3,6 @@ import {
   Post,
   Get,
   Body,
-  Param,
   Query,
   HttpCode,
   HttpStatus,
@@ -34,34 +33,30 @@ export class PurchaseController {
   }
 
   /**
-   * Check whether a specific user has successfully secured an item.
+   * List all confirmed purchases secured by a specific user.
    */
-  @Get('users/:userEmail')
-  @ApiOperation({ summary: 'Check if a user secured a purchase' })
+  @Get()
+  @ApiOperation({ summary: 'List all purchases secured by a user' })
   @ApiQuery({
-    name: 'flashSaleId',
+    name: 'userEmail',
     required: true,
-    description: 'UUID of the flash sale',
+    description: 'Email of the user',
   })
   @ApiResponse({
     status: 200,
     schema: {
-      example: {
-        userEmail: 'alice@example.com',
-        flashSaleId: 'uuid',
-        secured: true,
-        purchase: {
+      example: [
+        {
           id: 'uuid',
+          userEmail: 'alice@example.com',
+          flashSaleId: 'uuid',
           status: 'confirmed',
           createdAt: '2026-03-18T10:05:00.000Z',
         },
-      },
+      ],
     },
   })
-  getUserPurchaseStatus(
-    @Param('userEmail') userEmail: string,
-    @Query('flashSaleId') flashSaleId: string,
-  ) {
-    return this.purchaseService.getUserPurchaseStatus(userEmail, flashSaleId);
+  getUserPurchases(@Query('userEmail') userEmail: string) {
+    return this.purchaseService.getUserPurchases(userEmail);
   }
 }

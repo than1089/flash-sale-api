@@ -115,4 +115,18 @@ export class PurchaseService {
       purchase: purchase ?? null,
     };
   }
+
+  async getUserPurchases(userEmail: string): Promise<Purchase[]> {
+    if (!userEmail?.trim()) {
+      throw new BadRequestException('userEmail is required');
+    }
+
+    return this.purchaseRepo.find({
+      where: {
+        userEmail: userEmail.trim(),
+        status: PurchaseStatus.CONFIRMED,
+      },
+      order: { createdAt: 'DESC' },
+    });
+  }
 }
