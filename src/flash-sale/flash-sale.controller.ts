@@ -23,7 +23,7 @@ export class FlashSaleController {
   @Post()
   @UseGuards(ApiKeyGuard)
   @HttpCode(HttpStatus.CREATED)
-  @ApiOperation({ summary: 'Create a flash sale' })
+  @ApiOperation({ summary: 'Create a flash sale. For Admin only' })
   @ApiHeader({
     name: 'x-api-key',
     description: 'Admin API key',

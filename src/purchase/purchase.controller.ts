@@ -3,11 +3,12 @@ import {
   Post,
   Get,
   Body,
+  Param,
   Query,
   HttpCode,
   HttpStatus,
 } from '@nestjs/common';
-import { ApiTags, ApiOperation, ApiResponse, ApiQuery } from '@nestjs/swagger';
+import { ApiTags, ApiOperation, ApiResponse, ApiQuery, ApiParam } from '@nestjs/swagger';
 import { PurchaseService } from './purchase.service';
 import { AttemptPurchaseDto } from './dto/attempt-purchase.dto';
 
@@ -33,30 +34,39 @@ export class PurchaseController {
   }
 
   /**
-   * List all confirmed purchases secured by a specific user.
+   * Check whether a specific user has successfully secured an item.
    */
-  @Get()
-  @ApiOperation({ summary: 'List all purchases secured by a user' })
-  @ApiQuery({
+  @Get('users/:userEmail')
+  @ApiOperation({ summary: 'Check if a user secured a purchase' })
+  @ApiParam({
     name: 'userEmail',
     required: true,
     description: 'Email of the user',
   })
+  @ApiQuery({
+    name: 'flashSaleId',
+    required: true,
+    description: 'UUID of the flash sale',
+  })
   @ApiResponse({
     status: 200,
     schema: {
-      example: [
-        {
+      example: {
+        userEmail: 'alice@example.com',
+        flashSaleId: 'uuid',
+        purchase: {
           id: 'uuid',
-          userEmail: 'alice@example.com',
-          flashSaleId: 'uuid',
           status: 'confirmed',
           createdAt: '2026-03-18T10:05:00.000Z',
         },
-      ],
+      },
     },
   })
-  getUserPurchases(@Query('userEmail') userEmail: string) {
-    return this.purchaseService.getUserPurchases(userEmail);
+  @ApiResponse({ status: 404, description: 'Purchase not found' })
+  getUserPurchaseStatus(
+    @Param('userEmail') userEmail: string,
+    @Query('flashSaleId') flashSaleId: string,
+  ) {
+    return this.purchaseService.getUserPurchaseStatus(userEmail, flashSaleId);
   }
 }

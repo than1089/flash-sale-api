@@ -4,6 +4,7 @@ import {
   ConflictException,
   GoneException,
   BadRequestException,
+  NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
@@ -94,8 +95,7 @@ export class PurchaseService {
   ): Promise<{
     userEmail: string;
     flashSaleId: string;
-    secured: boolean;
-    purchase: Purchase | null;
+    purchase: Purchase;
   }> {
     // Validate sale exists
     await this.flashSaleService.findById(flashSaleId);
@@ -108,25 +108,14 @@ export class PurchaseService {
       },
     });
 
+    if (!purchase) {
+      throw new NotFoundException('Purchase not found');
+    }
+
     return {
       userEmail,
       flashSaleId,
-      secured: purchase !== null,
-      purchase: purchase ?? null,
+      purchase,
     };
-  }
-
-  async getUserPurchases(userEmail: string): Promise<Purchase[]> {
-    if (!userEmail?.trim()) {
-      throw new BadRequestException('userEmail is required');
-    }
-
-    return this.purchaseRepo.find({
-      where: {
-        userEmail: userEmail.trim(),
-        status: PurchaseStatus.CONFIRMED,
-      },
-      order: { createdAt: 'DESC' },
-    });
   }
 }
