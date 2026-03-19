@@ -6,7 +6,7 @@ export class AttemptPurchaseDto {
     description: 'Unique email of the user attempting the purchase',
     example: 'alice@example.com',
   })
-  @IsEmail()
+  @IsEmail({}, { message: 'Invalid email' })
   @IsString()
   @IsNotEmpty()
   @MaxLength(254)

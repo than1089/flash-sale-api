@@ -13,6 +13,29 @@ export class FlashSale {
   @Column({ name: 'product_name' })
   productName: string;
 
+  @Column({
+    type: 'decimal',
+    precision: 10,
+    scale: 2,
+    transformer: {
+      to: (value: number) => value,
+      from: (value: string) => Number(value),
+    },
+  })
+  price: number;
+
+  @Column({
+    name: 'sale_price',
+    type: 'decimal',
+    precision: 10,
+    scale: 2,
+    transformer: {
+      to: (value: number) => value,
+      from: (value: string) => Number(value),
+    },
+  })
+  salePrice: number;
+
   @Column({ name: 'start_time', type: 'timestamptz' })
   startTime: Date;
 

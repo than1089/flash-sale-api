@@ -55,8 +55,14 @@ export class FlashSaleService implements OnModuleInit {
       throw new BadRequestException('endTime must be after startTime');
     }
 
+    if (dto.salePrice >= dto.price) {
+      throw new BadRequestException('salePrice must be less than price');
+    }
+
     const sale = this.flashSaleRepo.create({
       productName: dto.productName,
+      price: dto.price,
+      salePrice: dto.salePrice,
       startTime: start,
       endTime: end,
       totalInventory: dto.totalInventory,
@@ -113,6 +119,7 @@ export class FlashSaleService implements OnModuleInit {
 
       if (!sale) {
         sale = await this.flashSaleRepo.findOne({
+          where: { endTime: LessThanOrEqual(now) },
           order: { endTime: 'DESC' },
         });
       }

@@ -48,6 +48,8 @@ export class FlashSaleController {
       example: {
         id: 'uuid',
         productName: 'Limited Edition Sneakers',
+        price: 120,
+        salePrice: 79.99,
         status: 'active',
         startTime: '2026-03-18T10:00:00.000Z',
         endTime: '2026-03-18T12:00:00.000Z',
@@ -63,6 +65,8 @@ export class FlashSaleController {
     return {
       id: sale.id,
       productName: sale.productName,
+      price: sale.price,
+      salePrice: sale.salePrice,
       status,
       startTime: sale.startTime,
       endTime: sale.endTime,
