@@ -143,7 +143,7 @@ Interactive Swagger docs are at `http://localhost:3000/api`.
 
 To seed a flash sale, open `http://localhost:3000/api` or use Postman and call `POST /flash-sales` with the `x-api-key` header set to the `ADMIN_API_KEY` value from your `.env` file.
 
-Example with `curl`:
+Example curl request — remember to update `startTime` and `endTime` to your desired time frame:
 
 ```bash
 curl -X POST http://localhost:3000/flash-sales \
