@@ -41,6 +41,7 @@ Redis is fast but not durable by default. Every confirmed purchase is persisted 
 | Single Redis node (dev) | Simple local setup | Add Redis Sentinel or Cluster for HA in production |
 | Single PostgreSQL instance | Simpler operations and local setup | Add replicas/failover for HA and read scaling in production |
 | Inline post-purchase persistence | After Redis reserves the slot, the API immediately writes the confirmed purchase to PostgreSQL in the same request, keeping the flow simple and the response deterministic | If payment, email, notifications, or other follow-up steps are added after purchase, move those side effects to a message queue so retries, failures, and downstream latency do not block or destabilise the purchase path |
+| No API gateway in front of the service | Fewer moving parts and easier local development | For future production hardening, add an API gateway or edge layer to enforce per-IP rate limiting, bot protection, and other request filtering before traffic reaches the API cluster |
 
 ---
 
@@ -104,7 +105,7 @@ DB_DATABASE=flash_sale
 REDIS_HOST=localhost
 REDIS_PORT=6379
 
-ADMIN_API_KEY=Bo0k!p1_F$Admin
+ADMIN_API_KEY=admin-api-key
 ```
 
 Start the required infrastructure services:
@@ -147,13 +148,13 @@ Example with `curl`:
 ```bash
 curl -X POST http://localhost:3000/flash-sales \
   -H "Content-Type: application/json" \
-  -H "x-api-key: Bo0k!p1_F$Admin" \
+  -H "x-api-key: admin-api-key" \
   -d '{
     "productName": "Limited Edition Sneakers",
     "price": 120,
     "salePrice": 79.99,
-    "startTime": "2026-03-23T14:00:00.000Z",
-    "endTime": "2026-03-23T16:00:00.000Z",
+    "startTime": "2026-03-23T00:00:00.000Z",
+    "endTime": "2026-03-23T23:00:00.000Z",
     "totalInventory": 100
   }'
 ```
