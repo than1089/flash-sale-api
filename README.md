@@ -60,15 +60,15 @@ flowchart TB
     API2[API Instance 2]
   end
   Redis[(Redis<br>Atomic reservation + inventory + duplicate guard + cache)]
-  PG[(PostgreSQL)]
+  PG[(PostgreSQL<br>flash_sales + purchases)]
 
   Clients -->|HTTPS| LB
   LB -->|Round-robin| API_CLUSTER
 
-  API_CLUSTER -->|Purchase path<br>Atomic Lua check+reserve| Redis
-  API_CLUSTER -->|Status path<br>Read sale metadata cache| Redis
+  API_CLUSTER -->|Purchase<br>Atomic Lua check+reserve| Redis
+  API_CLUSTER -->|Status<br>Read sale metadata cache| Redis
   API_CLUSTER -->|Persist confirmed purchase| PG
-  API_CLUSTER -->|Purchase status GET<br>read purchase record| PG
+  API_CLUSTER -->|Purchase Status<br>read purchase record| PG
   PG -.->|On init: read active/upcoming sales| API_CLUSTER
   API_CLUSTER -.->|On init: sync sale status/inventory| Redis
 ```
@@ -158,6 +158,16 @@ curl -X POST http://localhost:3000/flash-sales \
     "totalInventory": 100
   }'
 ```
+
+---
+
+## Frontend Setup
+
+The complete flash sale system includes a separate front-end application for users to browse and purchase items.
+
+Visit the [flash-sale-ui](https://github.com/than1089/flash-sale-ui) repository and follow its README for instructions to set up and start the UI locally.
+
+The UI will communicate with this API at `http://localhost:3000`.
 
 ---
 
