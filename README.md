@@ -40,92 +40,36 @@ Redis is fast but not durable by default. Every confirmed purchase is persisted 
 | TypeORM `synchronize: true` | Fast local development | Must switch to migrations before production |
 | Single Redis node (dev) | Simple local setup | Add Redis Sentinel or Cluster for HA in production |
 | Single PostgreSQL instance | Simpler operations and local setup | Add replicas/failover for HA and read scaling in production |
+| Inline post-purchase persistence | After Redis reserves the slot, the API immediately writes the confirmed purchase to PostgreSQL in the same request, keeping the flow simple and the response deterministic | If payment, email, notifications, or other follow-up steps are added after purchase, move those side effects to a message queue so retries, failures, and downstream latency do not block or destabilise the purchase path |
 
 ---
 
 ## System Diagram
 
-### Infrastructure
+### Infrastructure Components
+
+[Backup architecture image](./architecture-design.png) if your Markdown viewer does not render the Mermaid chart.
 
 ```mermaid
 flowchart TB
-  Clients["Client Apps\nUsers interact through web, mobile, or API tools"]
+  Clients[Client Apps]
+  LB[Load Balancer]
+  subgraph API_CLUSTER[NestJS API Cluster]
+    API1[API Instance 1]
+    API2[API Instance 2]
+  end
+  Redis[(Redis<br>Atomic reservation + inventory + duplicate guard + cache)]
+  PG[(PostgreSQL)]
 
-    Clients -->|HTTPS| LB
+  Clients -->|HTTPS| LB
+  LB -->|Round-robin| API_CLUSTER
 
-    subgraph INFRA["Infrastructure"]
-    LB["Load Balancer\nDistributes incoming traffic across API instances"]
-
-        subgraph API_CLUSTER["API Cluster (horizontally scalable)"]
-      API1["NestJS API Instance 1\nHandles requests and runs business logic"]
-      API2["NestJS API Instance 2\nHandles requests and runs business logic"]
-        end
-
-    REDIS["Redis\nProvides fast inventory control, duplicate protection, and caching"]
-
-    PG["PostgreSQL\nPersists flash sales and confirmed purchases durably"]
-    end
-
-    LB -->|HTTP round-robin| API1
-    LB -->|HTTP round-robin| API2
-
-    API1 -->|ioredis TCP| REDIS
-    API2 -->|ioredis TCP| REDIS
-
-    API1 -->|TypeORM TCP| PG
-    API2 -->|TypeORM TCP| PG
-```
-
-  Component roles:
-
-  - Client Apps: users or testers sending requests to the backend.
-  - Load Balancer: spreads traffic across multiple API instances.
-  - API Instances: validate requests, apply business rules, and coordinate Redis and PostgreSQL.
-  - Redis: protects the hot purchase path where concurrency matters most.
-  - PostgreSQL: stores durable business records that must survive restarts and failures.
-
-### Application Modules
-
-```mermaid
-flowchart LR
-    subgraph API_LAYER[Application Layer]
-      FSC[FlashSaleController]
-      PSC[PurchaseController]
-      FSS[FlashSaleService]
-      PSS[PurchaseService]
-      RDS[RedisService]
-    end
-
-    FSC --> FSS
-    PSC --> PSS
-    PSS --> FSS
-    FSS --> RDS
-    PSS --> RDS
-
-    subgraph REDIS_LAYER[Redis Keys]
-      LUA[Atomic Lua Script\nSISMEMBER · GET · DECR · SADD]
-      INV[Inventory Counter]
-      SET[Purchasers Set]
-      META[Sale Metadata Cache TTL 10s]
-    end
-
-    RDS --> LUA
-    LUA --> INV
-    LUA --> SET
-    RDS --> META
-
-    subgraph DB_LAYER[PostgreSQL Tables]
-      FS_TABLE[flash_sales]
-      PUR_TABLE[purchases\nUNIQUE user_email + flash_sale_id]
-    end
-
-    FSS --> FS_TABLE
-    FSS --> PUR_TABLE
-    PSS --> PUR_TABLE
-
-    FSS -. startup inventory sync .-> INV
-    PSS -. DB failure compensation .-> INV
-    PSS -. DB failure compensation .-> SET
+  API_CLUSTER -->|Purchase path<br>Atomic Lua check+reserve| Redis
+  API_CLUSTER -->|Status path<br>Read sale metadata cache| Redis
+  API_CLUSTER -->|Persist confirmed purchase| PG
+  API_CLUSTER -->|Purchase status GET<br>read purchase record| PG
+  PG -.->|On init: read active/upcoming sales| API_CLUSTER
+  API_CLUSTER -.->|On init: sync sale status/inventory| Redis
 ```
 
 ---
@@ -196,6 +140,24 @@ npm run start:prod
 The API is available at `http://localhost:3000`.  
 Interactive Swagger docs are at `http://localhost:3000/api`.
 
+To seed a flash sale, open `http://localhost:3000/api` or use Postman and call `POST /flash-sales` with the `x-api-key` header set to the `ADMIN_API_KEY` value from your `.env` file.
+
+Example with `curl`:
+
+```bash
+curl -X POST http://localhost:3000/flash-sales \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: Bo0k!p1_F$Admin" \
+  -d '{
+    "productName": "Limited Edition Sneakers",
+    "price": 120,
+    "salePrice": 79.99,
+    "startTime": "2026-03-23T14:00:00.000Z",
+    "endTime": "2026-03-23T16:00:00.000Z",
+    "totalInventory": 100
+  }'
+```
+
 ---
 
 ## API Overview
@@ -239,15 +201,16 @@ npm run test:stress
 
 **Test 1 — Inventory cap under load**
 
-- 1,000 unique users attempt to purchase simultaneously
+- 10,000 unique users attempt to purchase simultaneously
 - Inventory is set to 120
-- Expected: exactly 120 succeed, 880 are rejected with sold-out (410)
+- Expected: exactly 120 succeed, 9,880 are rejected with sold-out (status code: 410)
 
 **Test 2 — Duplicate purchase prevention under retries**
 
-- 100 unique users each fire 10 concurrent purchase requests (1,000 total)
-- Inventory is set to 100
-- Expected: exactly 100 succeed (one per user), 900 are rejected as duplicates (409)
+- 1,000 unique users each fire 10 concurrent purchase requests (10,000 total)
+- Inventory is set to 60
+- Expected: exactly 60 succeed, the remaining 9,940 fail as a mix of duplicates (status code: 409) and sold-out (status code: 410)
+- Expected: no user gets more than one successful purchase
 
 ### Why these results prove correctness
 
