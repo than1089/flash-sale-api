@@ -1,98 +1,258 @@
-<p align="center">
-  <a href="http://nestjs.com/" target="blank"><img src="https://nestjs.com/img/logo-small.svg" width="120" alt="Nest Logo" /></a>
-</p>
+# Flash Sale API
 
-[circleci-image]: https://img.shields.io/circleci/build/github/nestjs/nest/master?token=abc123def456
-[circleci-url]: https://circleci.com/gh/nestjs/nest
+A high-concurrency flash sale backend built with **NestJS**, **PostgreSQL**, and **Redis**. It handles simultaneous purchase attempts safely using atomic Redis Lua scripts, preventing overselling and duplicate purchases without database-level locks.
 
-  <p align="center">A progressive <a href="http://nodejs.org" target="_blank">Node.js</a> framework for building efficient and scalable server-side applications.</p>
-    <p align="center">
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/v/@nestjs/core.svg" alt="NPM Version" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/l/@nestjs/core.svg" alt="Package License" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/dm/@nestjs/common.svg" alt="NPM Downloads" /></a>
-<a href="https://circleci.com/gh/nestjs/nest" target="_blank"><img src="https://img.shields.io/circleci/build/github/nestjs/nest/master" alt="CircleCI" /></a>
-<a href="https://discord.gg/G7Qnnhy" target="_blank"><img src="https://img.shields.io/badge/discord-online-brightgreen.svg" alt="Discord"/></a>
-<a href="https://opencollective.com/nest#backer" target="_blank"><img src="https://opencollective.com/nest/backers/badge.svg" alt="Backers on Open Collective" /></a>
-<a href="https://opencollective.com/nest#sponsor" target="_blank"><img src="https://opencollective.com/nest/sponsors/badge.svg" alt="Sponsors on Open Collective" /></a>
-  <a href="https://paypal.me/kamilmysliwiec" target="_blank"><img src="https://img.shields.io/badge/Donate-PayPal-ff3f59.svg" alt="Donate us"/></a>
-    <a href="https://opencollective.com/nest#sponsor"  target="_blank"><img src="https://img.shields.io/badge/Support%20us-Open%20Collective-41B883.svg" alt="Support us"></a>
-  <a href="https://twitter.com/nestframework" target="_blank"><img src="https://img.shields.io/twitter/follow/nestframework.svg?style=social&label=Follow" alt="Follow us on Twitter"></a>
-</p>
-  <!--[![Backers on Open Collective](https://opencollective.com/nest/backers/badge.svg)](https://opencollective.com/nest#backer)
-  [![Sponsors on Open Collective](https://opencollective.com/nest/sponsors/badge.svg)](https://opencollective.com/nest#sponsor)-->
+---
 
-## Description
+## Table of Contents
 
-[Nest](https://github.com/nestjs/nest) framework TypeScript starter repository.
+- [Design Choices and Trade-offs](#design-choices-and-trade-offs)
+- [System Diagram](#system-diagram)
+- [Prerequisites](#prerequisites)
+- [Environment Setup](#environment-setup)
+- [Running the Server](#running-the-server)
+- [API Overview](#api-overview)
+- [Running Tests](#running-tests)
+- [Stress Tests](#stress-tests)
 
-## Project setup
+---
 
-```bash
-$ npm install
+## Design Choices and Trade-offs
+
+### Redis as the concurrency gate
+
+All inventory state lives in Redis. A single atomic Lua script checks membership, reads the counter, and decrements in one round-trip — no race conditions are possible. PostgreSQL is only written to after Redis has confirmed the reservation.
+
+### PostgreSQL as the source of truth
+
+Redis is fast but not durable by default. Every confirmed purchase is persisted to PostgreSQL. If a DB write fails after a successful Redis reservation, the slot is immediately compensated (released back) to prevent inventory drift.
+
+### Sale metadata cache
+
+`GET /flash-sales/status` is the highest-read endpoint. The flash sale row is cached in Redis for 10 seconds to reduce PostgreSQL load. Inventory is **always** read fresh from the Redis counter, so the displayed remaining stock is never stale.
+
+### Trade-offs
+
+| Decision | Benefit | Trade-off |
+|---|---|---|
+| Redis Lua for atomicity | Zero oversell, no DB locks | Redis is a SPOF without replication |
+| Metadata cache (10 s TTL) | Reduced DB reads at scale | Sale details can lag by up to 10 s after creation |
+| TypeORM `synchronize: true` | Fast local development | Must switch to migrations before production |
+| Single Redis node (dev) | Simple local setup | Add Redis Sentinel or Cluster for HA in production |
+| Single PostgreSQL instance | Simpler operations and local setup | Add replicas/failover for HA and read scaling in production |
+
+---
+
+## System Diagram
+
+### Infrastructure
+
+```mermaid
+flowchart TB
+  Clients["Client Apps\nUsers interact through web, mobile, or API tools"]
+
+    Clients -->|HTTPS| LB
+
+    subgraph INFRA["Infrastructure"]
+    LB["Load Balancer\nDistributes incoming traffic across API instances"]
+
+        subgraph API_CLUSTER["API Cluster (horizontally scalable)"]
+      API1["NestJS API Instance 1\nHandles requests and runs business logic"]
+      API2["NestJS API Instance 2\nHandles requests and runs business logic"]
+        end
+
+    REDIS["Redis\nProvides fast inventory control, duplicate protection, and caching"]
+
+    PG["PostgreSQL\nPersists flash sales and confirmed purchases durably"]
+    end
+
+    LB -->|HTTP round-robin| API1
+    LB -->|HTTP round-robin| API2
+
+    API1 -->|ioredis TCP| REDIS
+    API2 -->|ioredis TCP| REDIS
+
+    API1 -->|TypeORM TCP| PG
+    API2 -->|TypeORM TCP| PG
 ```
 
-## Compile and run the project
+  Component roles:
 
-```bash
-# development
-$ npm run start
+  - Client Apps: users or testers sending requests to the backend.
+  - Load Balancer: spreads traffic across multiple API instances.
+  - API Instances: validate requests, apply business rules, and coordinate Redis and PostgreSQL.
+  - Redis: protects the hot purchase path where concurrency matters most.
+  - PostgreSQL: stores durable business records that must survive restarts and failures.
 
-# watch mode
-$ npm run start:dev
+### Application Modules
 
-# production mode
-$ npm run start:prod
+```mermaid
+flowchart LR
+    subgraph API_LAYER[Application Layer]
+      FSC[FlashSaleController]
+      PSC[PurchaseController]
+      FSS[FlashSaleService]
+      PSS[PurchaseService]
+      RDS[RedisService]
+    end
+
+    FSC --> FSS
+    PSC --> PSS
+    PSS --> FSS
+    FSS --> RDS
+    PSS --> RDS
+
+    subgraph REDIS_LAYER[Redis Keys]
+      LUA[Atomic Lua Script\nSISMEMBER · GET · DECR · SADD]
+      INV[Inventory Counter]
+      SET[Purchasers Set]
+      META[Sale Metadata Cache TTL 10s]
+    end
+
+    RDS --> LUA
+    LUA --> INV
+    LUA --> SET
+    RDS --> META
+
+    subgraph DB_LAYER[PostgreSQL Tables]
+      FS_TABLE[flash_sales]
+      PUR_TABLE[purchases\nUNIQUE user_email + flash_sale_id]
+    end
+
+    FSS --> FS_TABLE
+    FSS --> PUR_TABLE
+    PSS --> PUR_TABLE
+
+    FSS -. startup inventory sync .-> INV
+    PSS -. DB failure compensation .-> INV
+    PSS -. DB failure compensation .-> SET
 ```
 
-## Run tests
+---
+
+## Prerequisites
+
+- Node.js 20+
+- npm 10+
+- Docker and Docker Compose (for local PostgreSQL and Redis)
+
+---
+
+## Environment Setup
+
+Copy the example variables and adjust if needed:
 
 ```bash
-# unit tests
-$ npm run test
-
-# e2e tests
-$ npm run test:e2e
-
-# test coverage
-$ npm run test:cov
+cp .env.example .env   # if provided, otherwise create .env manually
 ```
 
-## Deployment
+The `.env` file used for local development:
 
-When you're ready to deploy your NestJS application to production, there are some key steps you can take to ensure it runs as efficiently as possible. Check out the [deployment documentation](https://docs.nestjs.com/deployment) for more information.
+```env
+PORT=3000
 
-If you are looking for a cloud-based platform to deploy your NestJS application, check out [Mau](https://mau.nestjs.com), our official platform for deploying NestJS applications on AWS. Mau makes deployment straightforward and fast, requiring just a few simple steps:
+DB_HOST=localhost
+DB_PORT=5432
+DB_USERNAME=postgres
+DB_PASSWORD=postgres
+DB_DATABASE=flash_sale
+
+REDIS_HOST=localhost
+REDIS_PORT=6379
+
+ADMIN_API_KEY=Bo0k!p1_F$Admin
+```
+
+Start the required infrastructure services:
 
 ```bash
-$ npm install -g @nestjs/mau
-$ mau deploy
+docker-compose up -d
 ```
 
-With Mau, you can deploy your application in just a few clicks, allowing you to focus on building features rather than managing infrastructure.
+This spins up PostgreSQL on port `5432` and Redis on port `6379`. The database schema is created automatically on first startup via TypeORM `synchronize`.
 
-## Resources
+Install dependencies:
 
-Check out a few resources that may come in handy when working with NestJS:
+```bash
+npm install
+```
 
-- Visit the [NestJS Documentation](https://docs.nestjs.com) to learn more about the framework.
-- For questions and support, please visit our [Discord channel](https://discord.gg/G7Qnnhy).
-- To dive deeper and get more hands-on experience, check out our official video [courses](https://courses.nestjs.com/).
-- Deploy your application to AWS with the help of [NestJS Mau](https://mau.nestjs.com) in just a few clicks.
-- Visualize your application graph and interact with the NestJS application in real-time using [NestJS Devtools](https://devtools.nestjs.com).
-- Need help with your project (part-time to full-time)? Check out our official [enterprise support](https://enterprise.nestjs.com).
-- To stay in the loop and get updates, follow us on [X](https://x.com/nestframework) and [LinkedIn](https://linkedin.com/company/nestjs).
-- Looking for a job, or have a job to offer? Check out our official [Jobs board](https://jobs.nestjs.com).
+---
 
-## Support
+## Running the Server
 
-Nest is an MIT-licensed open source project. It can grow thanks to the sponsors and support by the amazing backers. If you'd like to join them, please [read more here](https://docs.nestjs.com/support).
+```bash
+# development with watch mode
+npm run start:dev
 
-## Stay in touch
+# standard start
+npm run start
 
-- Author - [Kamil Myśliwiec](https://twitter.com/kammysliwiec)
-- Website - [https://nestjs.com](https://nestjs.com/)
-- Twitter - [@nestframework](https://twitter.com/nestframework)
+# production build
+npm run build
+npm run start:prod
+```
 
-## License
+The API is available at `http://localhost:3000`.  
+Interactive Swagger docs are at `http://localhost:3000/api`.
 
-Nest is [MIT licensed](https://github.com/nestjs/nest/blob/master/LICENSE).
+---
+
+## API Overview
+
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| `POST` | `/flash-sales` | `x-api-key` header | Create a flash sale |
+| `GET` | `/flash-sales/status` | — | Get current sale status and remaining inventory |
+| `POST` | `/purchases` | — | Attempt to purchase a flash sale item |
+| `GET` | `/purchases/users/:userEmail?flashSaleId=` | — | Look up a user's purchase for a specific sale |
+
+---
+
+## Running Tests
+
+```bash
+# all unit tests (business logic)
+npm run test:unit
+
+# API endpoint integration tests (no DB or Redis required)
+npm run test:integration
+
+# full test suite
+npm run test
+
+# test coverage report
+npm run test:cov
+```
+
+---
+
+## Stress Tests
+
+The stress tests simulate high volumes of concurrent purchase attempts entirely in-process using in-memory fakes for Redis and the database — no running infrastructure is needed.
+
+```bash
+npm run test:stress
+```
+
+### What the tests assert
+
+**Test 1 — Inventory cap under load**
+
+- 1,000 unique users attempt to purchase simultaneously
+- Inventory is set to 120
+- Expected: exactly 120 succeed, 880 are rejected with sold-out (410)
+
+**Test 2 — Duplicate purchase prevention under retries**
+
+- 100 unique users each fire 10 concurrent purchase requests (1,000 total)
+- Inventory is set to 100
+- Expected: exactly 100 succeed (one per user), 900 are rejected as duplicates (409)
+
+### Why these results prove correctness
+
+The atomic Redis Lua script (`SISMEMBER` → `GET` → `DECR` → `SADD`) is the single serialisation point. Even with thousands of concurrent coroutines, the script executes as a unit — no two requests can both read the same inventory value and both decrement it. The stress tests confirm that:
+
+- Total confirmed purchases never exceed total inventory regardless of concurrency
+- No user can hold more than one slot even when retrying aggressively
+- DB-level unique constraints and Redis compensation work together to close any remaining gap

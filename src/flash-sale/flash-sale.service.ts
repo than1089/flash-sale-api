@@ -16,6 +16,10 @@ import { Purchase, PurchaseStatus } from '../purchase/entities/purchase.entity';
 @Injectable()
 export class FlashSaleService implements OnModuleInit {
   private readonly logger = new Logger(FlashSaleService.name);
+  // Cache TTL for the flash sale metadata DB lookup (seconds).
+  // Inventory is always read fresh from Redis regardless of this TTL.
+  private static readonly SALE_CACHE_KEY = 'flash_sale:current:meta';
+  private static readonly SALE_CACHE_TTL = 10;
 
   constructor(
     @InjectRepository(FlashSale)
@@ -23,7 +27,7 @@ export class FlashSaleService implements OnModuleInit {
     @InjectRepository(Purchase)
     private readonly purchaseRepo: Repository<Purchase>,
     private readonly redisService: RedisService,
-  ) {}
+  ) { }
 
   /**
    * On startup, sync Redis inventory for any sales that are currently active
@@ -55,8 +59,8 @@ export class FlashSaleService implements OnModuleInit {
       throw new BadRequestException('endTime must be after startTime');
     }
 
-    if (dto.salePrice >= dto.price) {
-      throw new BadRequestException('salePrice must be less than price');
+    if (dto.salePrice > dto.price) {
+      throw new BadRequestException('salePrice must be less than or equal to price');
     }
 
     const sale = this.flashSaleRepo.create({
@@ -74,11 +78,6 @@ export class FlashSaleService implements OnModuleInit {
     await this.redisService.del(FlashSaleService.SALE_CACHE_KEY);
     return saved;
   }
-
-  // Cache TTL for the flash sale metadata DB lookup (seconds).
-  // Inventory is always read fresh from Redis regardless of this TTL.
-  private static readonly SALE_CACHE_KEY = 'flash_sale:current:meta';
-  private static readonly SALE_CACHE_TTL = 10;
 
   /**
    * Returns the most relevant single flash sale:
@@ -99,34 +98,7 @@ export class FlashSaleService implements OnModuleInit {
     );
 
     if (!sale) {
-      // Cache miss — query PostgreSQL
-      const now = new Date();
-
-      sale = await this.flashSaleRepo.findOne({
-        where: {
-          startTime: LessThanOrEqual(now),
-          endTime: MoreThanOrEqual(now),
-        },
-        order: { startTime: 'DESC' },
-      });
-
-      if (!sale) {
-        sale = await this.flashSaleRepo.findOne({
-          where: { startTime: MoreThanOrEqual(now) },
-          order: { startTime: 'ASC' },
-        });
-      }
-
-      if (!sale) {
-        sale = await this.flashSaleRepo.findOne({
-          where: { endTime: LessThanOrEqual(now) },
-          order: { endTime: 'DESC' },
-        });
-      }
-
-      if (!sale) {
-        throw new NotFoundException('No flash sale found');
-      }
+      sale = await this.getMostRelevantSaleFromDb();
 
       // Store in cache; intentionally fire-and-forget so a Redis hiccup
       // never blocks the response.
@@ -148,25 +120,45 @@ export class FlashSaleService implements OnModuleInit {
     return sale;
   }
 
-  async getActiveSale(): Promise<FlashSale> {
-    const now = new Date();
-    const sale = await this.flashSaleRepo.findOne({
-      where: {
-        startTime: LessThanOrEqual(now),
-        endTime: MoreThanOrEqual(now),
-      },
-      order: { startTime: 'DESC' },
-    });
-    if (!sale) throw new NotFoundException('No active flash sale');
-    return sale;
-  }
-
   private computeStatus(sale: FlashSale, remainingInventory: number): FlashSaleStatus {
     const now = new Date();
     if (now < sale.startTime) return FlashSaleStatus.UPCOMING;
     if (now > sale.endTime || remainingInventory <= 0)
       return FlashSaleStatus.ENDED;
     return FlashSaleStatus.ACTIVE;
+  }
+
+  private async getMostRelevantSaleFromDb(): Promise<FlashSale> {
+    const now = new Date();
+    // Priority 1: active sales
+    let sale = await this.flashSaleRepo.findOne({
+      where: {
+        startTime: LessThanOrEqual(now),
+        endTime: MoreThanOrEqual(now),
+      },
+      order: { startTime: 'DESC' },
+    });
+
+    // Priority 2: upcoming sales (soonest)
+    if (!sale) {
+      sale = await this.flashSaleRepo.findOne({
+        where: { startTime: MoreThanOrEqual(now) },
+        order: { startTime: 'ASC' },
+      });
+    }
+
+    // Priority 3: ended sales (most recent)
+    if (!sale) {
+      sale = await this.flashSaleRepo.findOne({
+        where: { endTime: LessThanOrEqual(now) },
+        order: { endTime: 'DESC' },
+      });
+    }
+
+    if (!sale) {
+      throw new NotFoundException('No flash sale found');
+    }
+    return sale;
   }
 
   private async getInventory(sale: FlashSale): Promise<number> {
